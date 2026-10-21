@@ -30,7 +30,7 @@ NC='\033[0m' # No Color
 # 项目信息
 PROJECT_NAME="AstrBot"
 AUTHOR="科技酱"
-VERSION="2.0.0"
+VERSION="2.1.0"
 
 # 容器与数据卷配置
 ASTRBOT_CONTAINER_NAME="astrbot"
@@ -169,12 +169,34 @@ check_network() {
 # 检查端口是否被占用
 check_port() {
     local port=$1
-    if ss -tlnp 2>/dev/null | grep -q ":${port} " ; then
-        return 0  # 端口被占用
-    elif netstat -tlnp 2>/dev/null | grep -q ":${port} " ; then
-        return 0
+    # 使用 ss 优先，netstat 作为后备，更精确的匹配
+    if command_exists ss; then
+        if ss -tlnH 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}\$"; then
+            return 0  # 端口被占用
+        fi
+    fi
+    if command_exists netstat; then
+        if netstat -tlnp 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${port}\$"; then
+            return 0
+        fi
+    fi
+    return 1  # 端口可用
+}
+
+# 获取占用端口的进程信息
+get_port_process() {
+    local port=$1
+    local proc_info=""
+    if command_exists ss; then
+        proc_info=$(ss -tlnp 2>/dev/null | grep -E "[:.]${port} " | head -1)
+    fi
+    if [ -z "$proc_info" ] && command_exists netstat; then
+        proc_info=$(netstat -tlnp 2>/dev/null | grep -E "[:.]${port} " | head -1)
+    fi
+    if [ -z "$proc_info" ]; then
+        echo "未知"
     else
-        return 1  # 端口可用
+        echo "$proc_info"
     fi
 }
 
@@ -297,13 +319,13 @@ check_ports() {
 
     if check_port "$ASTRBOT_PORT"; then
         warn "端口 $ASTRBOT_PORT 已被占用！"
-        echo -e "  占用进程：$(ss -tlnp 2>/dev/null | grep ':*${ASTRBOT_PORT} ' || echo '未知')"
+        echo -e "  占用进程：$(get_port_process "$ASTRBOT_PORT")"
         port_conflict=true
     fi
 
     if check_port "$NAPCAT_PORT"; then
         warn "端口 $NAPCAT_PORT 已被占用！"
-        echo -e "  占用进程：$(ss -tlnp 2>/dev/null | grep ':*${NAPCAT_PORT} ' || echo '未知')"
+        echo -e "  占用进程：$(get_port_process "$NAPCAT_PORT")"
         port_conflict=true
     fi
 
@@ -548,6 +570,7 @@ services:
       - "${NAPCAT_PORT}:6099"
     volumes:
       - ${NAPCAT_DATA_DIR}:/app/napcat/config
+      - ${NAPCAT_DATA_DIR}/QQ:/app/.config/QQ
     networks:
       - astrbot-net
 
@@ -896,9 +919,15 @@ deploy_astrbot() {
         echo -e "  ${YELLOW}1${NC} - 重新部署（删除旧容器并重新创建）"
         echo -e "  ${YELLOW}2${NC} - 更新镜像（拉取最新镜像并重启容器）"
         echo -e "  ${YELLOW}3${NC} - 跳过"
-        read -p "请选择操作 (1/2/3): " CHOICE
+        local deploy_choice
+        if [ "$NON_INTERACTIVE" = true ]; then
+            deploy_choice="1"
+            info "非交互模式：自动选择重新部署"
+        else
+            read -p "请选择操作 (1/2/3): " deploy_choice
+        fi
 
-        case "$CHOICE" in
+        case "$deploy_choice" in
             1)
                 info "停止并删除旧容器..."
                 docker stop "$ASTRBOT_CONTAINER_NAME" 2>/dev/null || true
@@ -913,7 +942,7 @@ deploy_astrbot() {
                 return 0
                 ;;
             *)
-                error "无效选择，跳过 AstrBot 部署。"
+                warn "无效选择，跳过 AstrBot 部署。"
                 return 0
                 ;;
         esac
@@ -925,7 +954,10 @@ deploy_astrbot() {
 
     # 拉取镜像
     info "拉取 AstrBot 镜像（$ASTRBOT_IMAGE）..."
-    docker pull "$ASTRBOT_IMAGE"
+    if ! docker pull "$ASTRBOT_IMAGE"; then
+        error "AstrBot 镜像拉取失败！请检查网络或镜像加速配置。"
+        return 1
+    fi
 
     # 创建并启动容器
     info "创建并启动 AstrBot 容器..."
@@ -936,10 +968,11 @@ deploy_astrbot() {
         -v "${ASTRBOT_DATA_DIR}:/AstrBot/data" \
         "$ASTRBOT_IMAGE"
 
-    # 验证容器状态
-    if docker ps --format '{{.Names}}' | grep -q "^${ASTRBOT_CONTAINER_NAME}$"; then
+    # 等待并验证容器状态
+    local server_ip=$(get_server_ip)
+    if wait_container_healthy "$ASTRBOT_CONTAINER_NAME"; then
         info "AstrBot 部署成功！"
-        tip "访问地址：http://$(hostname -I 2>/dev/null | awk '{print $1}'):${ASTRBOT_PORT}"
+        tip "访问地址：http://${server_ip}:${ASTRBOT_PORT}"
         tip "数据目录：$ASTRBOT_DATA_DIR"
     else
         error "AstrBot 容器启动失败！请查看日志：docker logs $ASTRBOT_CONTAINER_NAME"
@@ -989,9 +1022,15 @@ deploy_napcat() {
         echo -e "  ${YELLOW}1${NC} - 重新部署（删除旧容器并重新创建）"
         echo -e "  ${YELLOW}2${NC} - 更新镜像（拉取最新镜像并重启容器）"
         echo -e "  ${YELLOW}3${NC} - 跳过"
-        read -p "请选择操作 (1/2/3): " CHOICE
+        local deploy_choice
+        if [ "$NON_INTERACTIVE" = true ]; then
+            deploy_choice="1"
+            info "非交互模式：自动选择重新部署"
+        else
+            read -p "请选择操作 (1/2/3): " deploy_choice
+        fi
 
-        case "$CHOICE" in
+        case "$deploy_choice" in
             1)
                 info "停止并删除旧容器..."
                 docker stop "$NAPCAT_CONTAINER_NAME" 2>/dev/null || true
@@ -1006,7 +1045,7 @@ deploy_napcat() {
                 return 0
                 ;;
             *)
-                error "无效选择，跳过 NapCat 部署。"
+                warn "无效选择，跳过 NapCat 部署。"
                 return 0
                 ;;
         esac
@@ -1018,7 +1057,10 @@ deploy_napcat() {
 
     # 拉取镜像
     info "拉取 NapCat 镜像（$NAPCAT_IMAGE）..."
-    docker pull "$NAPCAT_IMAGE"
+    if ! docker pull "$NAPCAT_IMAGE"; then
+        error "NapCat 镜像拉取失败！请检查网络或镜像加速配置。"
+        return 1
+    fi
 
     # 创建并启动容器
     info "创建并启动 NapCat 容器..."
@@ -1030,12 +1072,14 @@ deploy_napcat() {
         -e ACCOUNT="" \
         -p "${NAPCAT_PORT}:6099" \
         -v "${NAPCAT_DATA_DIR}:/app/napcat/config" \
+        -v "${NAPCAT_DATA_DIR}/QQ:/app/.config/QQ" \
         "$NAPCAT_IMAGE"
 
-    # 验证容器状态
-    if docker ps --format '{{.Names}}' | grep -q "^${NAPCAT_CONTAINER_NAME}$"; then
+    # 等待并验证容器状态
+    local server_ip=$(get_server_ip)
+    if wait_container_healthy "$NAPCAT_CONTAINER_NAME"; then
         info "NapCat 部署成功！"
-        tip "WebUI 地址：http://$(hostname -I 2>/dev/null | awk '{print $1}'):${NAPCAT_PORT}"
+        tip "WebUI 地址：http://${server_ip}:${NAPCAT_PORT}"
         tip "数据目录：$NAPCAT_DATA_DIR"
     else
         error "NapCat 容器启动失败！请查看日志：docker logs $NAPCAT_CONTAINER_NAME"
@@ -1065,6 +1109,7 @@ update_napcat() {
         -e ACCOUNT="" \
         -p "${NAPCAT_PORT}:6099" \
         -v "${NAPCAT_DATA_DIR}:/app/napcat/config" \
+        -v "${NAPCAT_DATA_DIR}/QQ:/app/.config/QQ" \
         "$NAPCAT_IMAGE"
 
     if docker ps --format '{{.Names}}' | grep -q "^${NAPCAT_CONTAINER_NAME}$"; then
@@ -1178,9 +1223,16 @@ show_logs() {
     echo -e "  ${YELLOW}1${NC} - 查看 AstrBot 日志"
     echo -e "  ${YELLOW}2${NC} - 查看 NapCat 日志"
     echo -e "  ${YELLOW}3${NC} - 返回主菜单"
-    read -p "请选择 (1/2/3): " LOG_CHOICE
 
-    case "$LOG_CHOICE" in
+    local log_choice
+    if [ "$NON_INTERACTIVE" = true ]; then
+        log_choice="1"
+        info "非交互模式：默认查看 AstrBot 日志"
+    else
+        read -p "请选择 (1/2/3): " log_choice
+    fi
+
+    case "$log_choice" in
         1)
             if docker ps -a --format '{{.Names}}' | grep -q "^${ASTRBOT_CONTAINER_NAME}$"; then
                 info "AstrBot 日志（Ctrl+C 退出）："
@@ -1219,9 +1271,16 @@ uninstall_services() {
     echo -e "  ${YELLOW}2${NC} - 卸载 NapCat"
     echo -e "  ${YELLOW}3${NC} - 全部卸载"
     echo -e "  ${YELLOW}4${NC} - 返回"
-    read -p "请选择 (1/2/3/4): " UNINSTALL_CHOICE
 
-    case "$UNINSTALL_CHOICE" in
+    local uninstall_choice
+    if [ "$NON_INTERACTIVE" = true ]; then
+        uninstall_choice="3"
+        info "非交互模式：自动选择全部卸载"
+    else
+        read -p "请选择 (1/2/3/4): " uninstall_choice
+    fi
+
+    case "$uninstall_choice" in
         1)
             info "卸载 AstrBot..."
             docker stop "$ASTRBOT_CONTAINER_NAME" 2>/dev/null || true

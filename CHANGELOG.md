@@ -1,5 +1,24 @@
 # 更新日志
 
+## [v2.1.0] - 2026-10-21
+
+### Bug 修复
+
+- **修复非交互模式兼容性** — `deploy_astrbot`、`deploy_napcat`、`show_logs`、`uninstall_services` 中的 `read -p` 交互提示在非交互模式下会卡住，现在非交互模式下自动选择默认操作
+- **修复 NapCat QQ 数据卷缺失** — NapCat Docker 容器缺少 `/app/.config/QQ` 挂载，导致 QQ 登录数据无法持久化，已补充挂载 `${NAPCAT_DATA_DIR}/QQ:/app/.config/QQ`
+- **修复端口检测精确度** — `check_port` 函数原先使用简单的 `grep` 匹配，可能误匹配（如端口 618 误匹配 6185），改用 `awk` + `grep -E` 精确匹配端口边界
+- **修复镜像拉取失败未处理** — `deploy_astrbot`/`deploy_napcat` 中 `docker pull` 失败后继续执行 `docker run`，现在拉取失败时提前返回错误
+
+### 增强改进
+
+- **统一使用 `get_server_ip()`** — 所有部署成功提示统一使用 `get_server_ip()` 函数获取服务器 IP（优先公网 IP），替代原先直接调用 `hostname -I`
+- **新增 `get_port_process()` 函数** — 封装端口占用进程信息获取逻辑，`check_ports` 中使用该函数
+- **部署后容器健康检查** — `deploy_astrbot`/`deploy_napcat` 部署后使用 `wait_container_healthy()` 等待容器启动，避免容器刚创建还未运行就判定为成功
+- **Compose 文件同步** — `docker-compose.yml` 中 NapCat 服务同步补充 QQ 数据卷挂载
+- **`error()` 函数不再使用 `exit 1`** — 部署函数中的错误改用 `return 1`，避免在非关键路径上意外退出脚本
+
+---
+
 ## [v2.0.0] - 2026-10-21
 
 ### 新增功能

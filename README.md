@@ -126,6 +126,13 @@ wget -O astrbot-install.sh https://gitee.com/einternet/AstrBot-OneClick-Deploy/r
 | AstrBot | astrbot | snowykami/astrbot:latest | 6185 | /home/astrbot/data |
 | NapCat | napcat | mlikiowa/napcat-docker:latest | 6099 | /home/napcat/data |
 
+### NapCat 数据卷挂载
+
+| 宿主机路径 | 容器路径 | 说明 |
+|------------|----------|------|
+| /home/napcat/data | /app/napcat/config | NapCat 配置文件 |
+| /home/napcat/data/QQ | /app/.config/QQ | QQ 登录数据（持久化） |
+
 ### 备份目录
 
 | 路径 | 说明 |
