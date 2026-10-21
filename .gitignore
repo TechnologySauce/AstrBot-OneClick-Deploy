@@ -1,0 +1,11 @@
+# Git 忽略文件
+*.tmp
+*.log
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+__pycache__/
+*.pyc
