@@ -23,6 +23,10 @@
 14. **脚本自更新** — 检测并更新到最新版本
 15. **错误统计** — 运行结束显示错误计数
 
+### v2.1 新增功能
+16. **系统信息查看** — 一键查看操作系统、CPU、内存、磁盘、Docker 运行状态、网络信息
+17. **服务健康检查** — 检查容器运行状态和 HTTP 可达性，快速诊断服务异常
+
 ## 使用方法
 
 ### 交互模式
@@ -64,6 +68,12 @@ wget -O astrbot-install.sh https://gitee.com/einternet/AstrBot-OneClick-Deploy/r
 
 # 清理 Docker 无用资源
 ./astrbot-install.sh cleanup
+
+# 查看系统信息
+./astrbot-install.sh info
+
+# 服务健康检查
+./astrbot-install.sh health
 
 # 更新脚本自身
 ./astrbot-install.sh self-update
@@ -112,11 +122,13 @@ wget -O astrbot-install.sh https://gitee.com/einternet/AstrBot-OneClick-Deploy/r
 | 16 | 配置防火墙 | 自动配置 UFW/firewalld 开放端口 |
 | 17 | Docker 清理 | 清理无用镜像、容器、网络和卷 |
 | 18 | 检查端口占用 | 检查所需端口是否被占用 |
+| 19 | 系统信息 | 查看操作系统、CPU、内存、磁盘、Docker 运行状态 |
+| 20 | 服务健康检查 | 检查容器运行状态和 HTTP 可达性 |
 
 ### 其他
 | 序号 | 功能 | 说明 |
 |------|------|------|
-| 19 | 更新脚本 | 检测并更新到最新版本 |
+| 21 | 更新脚本 | 检测并更新到最新版本 |
 | 0 | 退出 | 退出脚本 |
 
 ## 容器配置信息

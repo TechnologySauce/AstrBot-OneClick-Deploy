@@ -1145,6 +1145,154 @@ show_status() {
     echo ""
 }
 
+# 查看系统信息
+show_system_info() {
+    print_separator
+    echo -e "${CYAN}[系统信息]${NC}"
+    print_separator
+
+    echo ""
+    # 系统信息
+    echo -e "${GREEN}—— 系统信息 ——${NC}"
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        echo -e "  操作系统：$PRETTY_NAME"
+    fi
+    echo -e "  内核版本：$(uname -r)"
+    echo -e "  CPU 架构：$(dpkg --print-architecture 2>/dev/null || uname -m)"
+    echo -e "  主机名：$(hostname)"
+
+    # CPU 信息
+    local cpu_count=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo)
+    echo -e "  CPU 核心数：$cpu_count"
+
+    # 内存信息
+    local total_mem_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+    local avail_mem_kb=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}')
+    if [ -n "$total_mem_kb" ]; then
+        local total_mem_mb=$((total_mem_kb / 1024))
+        local avail_mem_mb=$((avail_mem_kb / 1024))
+        local used_mem_mb=$((total_mem_mb - avail_mem_mb))
+        local mem_usage=$((used_mem_mb * 100 / total_mem_mb))
+        echo -e "  内存使用：${used_mem_mb}MB / ${total_mem_mb}MB（使用率 ${mem_usage}%）"
+    fi
+
+    # 磁盘信息
+    echo ""
+    echo -e "${GREEN}—— 磁盘使用 ——${NC}"
+    df -h / 2>/dev/null | awk 'NR==2 {printf "  根分区：%s / %s（使用率 %s）\n", $3, $2, $5}'
+
+    # 运行时间
+    echo ""
+    echo -e "${GREEN}—— 运行时间 ——${NC}"
+    uptime 2>/dev/null | awk -F'load average' '{print "  "$1}' | sed 's/^[[:space:]]*//'
+
+    # Docker 信息
+    echo ""
+    echo -e "${GREEN}—— Docker 信息 ——${NC}"
+    if command_exists docker; then
+        local docker_ver=$(docker --version 2>/dev/null)
+        echo -e "  $docker_ver"
+        if docker info >/dev/null 2>&1; then
+            local docker_info=$(docker info --format '容器总数: {{.Containers}} | 运行中: {{.ContainersRunning}} | 镜像数: {{.Images}}' 2>/dev/null)
+            echo -e "  $docker_info"
+            local docker_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)
+            echo -e "  Docker 目录：$docker_root"
+        else
+            warn "  Docker 守护进程未运行"
+        fi
+    else
+        warn "  Docker 未安装"
+    fi
+
+    # 服务器 IP
+    echo ""
+    echo -e "${GREEN}—— 网络信息 ——${NC}"
+    local server_ip=$(get_server_ip)
+    echo -e "  服务器 IP：$server_ip"
+    echo -e "  AstrBot 地址：http://${server_ip}:${ASTRBOT_PORT}"
+    echo -e "  NapCat 地址：http://${server_ip}:${NAPCAT_PORT}"
+    echo ""
+}
+
+# 服务健康检查
+health_check() {
+    print_separator
+    echo -e "${CYAN}[服务健康检查]${NC}"
+    print_separator
+
+    local server_ip=$(get_server_ip)
+    local all_healthy=true
+
+    # AstrBot 健康检查
+    echo ""
+    echo -e "${GREEN}—— AstrBot 健康检查 ——${NC}"
+
+    if docker ps --format '{{.Names}}' | grep -q "^${ASTRBOT_CONTAINER_NAME}$"; then
+        local abot_status=$(docker inspect --format='{{.State.Status}}' "$ASTRBOT_CONTAINER_NAME" 2>/dev/null)
+        local abot_uptime=$(docker inspect --format='{{.State.StartedAt}}' "$ASTRBOT_CONTAINER_NAME" 2>/dev/null)
+        info "  容器状态：$abot_status"
+        info "  启动时间：$abot_uptime"
+
+        if [ "$abot_status" = "running" ]; then
+            # 检查 HTTP 可达性
+            if command_exists curl; then
+                local http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "http://127.0.0.1:${ASTRBOT_PORT}" 2>/dev/null)
+                if [ "$http_code" != "000" ] && [ "$http_code" != "" ]; then
+                    info "  HTTP 检查：$http_code（服务可达）"
+                else
+                    warn "  HTTP 检查：服务不可达（可能仍在启动中）"
+                    all_healthy=false
+                fi
+            fi
+        else
+            error "  容器未在运行状态"
+            all_healthy=false
+        fi
+    else
+        warn "  AstrBot 容器未部署"
+        all_healthy=false
+    fi
+
+    # NapCat 健康检查
+    echo ""
+    echo -e "${GREEN}—— NapCat 健康检查 ——${NC}"
+
+    if docker ps --format '{{.Names}}' | grep -q "^${NAPCAT_CONTAINER_NAME}$"; then
+        local ncat_status=$(docker inspect --format='{{.State.Status}}' "$NAPCAT_CONTAINER_NAME" 2>/dev/null)
+        local ncat_uptime=$(docker inspect --format='{{.State.StartedAt}}' "$NAPCAT_CONTAINER_NAME" 2>/dev/null)
+        info "  容器状态：$ncat_status"
+        info "  启动时间：$ncat_uptime"
+
+        if [ "$ncat_status" = "running" ]; then
+            if command_exists curl; then
+                local http_code=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 5 "http://127.0.0.1:${NAPCAT_PORT}" 2>/dev/null)
+                if [ "$http_code" != "000" ] && [ "$http_code" != "" ]; then
+                    info "  HTTP 检查：$http_code（服务可达）"
+                else
+                    warn "  HTTP 检查：服务不可达（可能仍在启动中）"
+                    all_healthy=false
+                fi
+            fi
+        else
+            error "  容器未在运行状态"
+            all_healthy=false
+        fi
+    else
+        warn "  NapCat 容器未部署"
+        all_healthy=false
+    fi
+
+    # 汇总
+    echo ""
+    if [ "$all_healthy" = true ]; then
+        info "所有服务运行正常！"
+    else
+        warn "部分服务异常，请查看上方详情"
+        tip "可使用「查看日志」功能排查问题"
+    fi
+}
+
 # 启动服务
 start_services() {
     print_separator
@@ -1363,11 +1511,13 @@ main_menu() {
         echo -e "  ${YELLOW}16${NC} - 配置防火墙"
         echo -e "  ${YELLOW}17${NC} - Docker 资源清理"
         echo -e "  ${YELLOW}18${NC} - 检查端口占用"
+        echo -e "  ${YELLOW}19${NC} - 系统信息"
+        echo -e "  ${YELLOW}20${NC} - 服务健康检查"
         echo -e "  ${CYAN}—— 其他 ——${NC}"
-        echo -e "  ${YELLOW}19${NC} - 更新脚本（自更新）"
+        echo -e "  ${YELLOW}21${NC} - 更新脚本（自更新）"
         echo -e "  ${YELLOW}0${NC}  - 退出"
         print_separator
-        read -p "  请输入序号 (0-19): " CHOICE
+        read -p "  请输入序号 (0-21): " CHOICE
 
         case "$CHOICE" in
             1)
@@ -1460,6 +1610,12 @@ main_menu() {
                 check_ports
                 ;;
             19)
+                show_system_info
+                ;;
+            20)
+                health_check
+                ;;
+            21)
                 self_update
                 ;;
             0)
@@ -1569,6 +1725,8 @@ AstrBot 一键部署脚本 v${VERSION}
   restore          恢复数据
   firewall         配置防火墙
   cleanup          清理 Docker 无用资源
+  info             查看系统信息
+  health           服务健康检查
   self-update       更新脚本自身
   help             显示此帮助信息
 
@@ -1667,6 +1825,14 @@ parse_args() {
                 RUN_COMMAND="cleanup"
                 shift
                 ;;
+            info)
+                RUN_COMMAND="info"
+                shift
+                ;;
+            health)
+                RUN_COMMAND="health"
+                shift
+                ;;
             self-update)
                 RUN_COMMAND="self-update"
                 shift
@@ -1755,6 +1921,12 @@ run_command() {
             ;;
         cleanup)
             docker_cleanup
+            ;;
+        info)
+            show_system_info
+            ;;
+        health)
+            health_check
             ;;
         self-update)
             self_update
