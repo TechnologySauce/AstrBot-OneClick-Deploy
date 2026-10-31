@@ -30,7 +30,7 @@ NC='\033[0m' # No Color
 # 项目信息
 PROJECT_NAME="AstrBot"
 AUTHOR="科技酱"
-VERSION="2.1.0"
+VERSION="3.0.0"
 
 # 容器与数据卷配置
 ASTRBOT_CONTAINER_NAME="astrbot"
@@ -45,9 +45,21 @@ NAPCAT_DATA_DIR="/home/napcat/data"
 # 备份目录
 BACKUP_DIR="/home/astrbot/backup"
 
+# 定时备份保留数量
+BACKUP_KEEP_COUNT="${BACKUP_KEEP_COUNT:-5}"
+
 # 端口配置
 ASTRBOT_PORT="6185"
 NAPCAT_PORT="6099"
+
+# 容器资源限制（0 表示不限制）
+ASTRBOT_MEM_LIMIT="0"
+ASTRBOT_CPU_LIMIT="0"
+NAPCAT_MEM_LIMIT="0"
+NAPCAT_CPU_LIMIT="0"
+
+# 包管理器（auto/detect: 自动检测）
+PKG_MANAGER=""
 
 # 脚本下载地址
 SCRIPT_URL="https://gitee.com/einternet/AstrBot-OneClick-Deploy/raw/main/astrbot-install.sh"
@@ -149,8 +161,18 @@ check_network() {
     info "检查网络连通性..."
     local test_hosts=("gitee.com" "download.docker.com" "hub.docker.com")
     local all_ok=true
+    # 兼容不同系统的 ping 参数
+    local ping_cmd="ping"
+    local ping_args="-c 1 -W 3"
+    # 某些系统（如 BusyBox）不支持 -W 参数
+    if ! $ping_cmd $ping_args "127.0.0.1" >/dev/null 2>&1; then
+        ping_args="-c 1 -w 3"
+        if ! $ping_cmd $ping_args "127.0.0.1" >/dev/null 2>&1; then
+            ping_args="-c 1"
+        fi
+    fi
     for host in "${test_hosts[@]}"; do
-        if ping -c 1 -W 3 "$host" >/dev/null 2>&1; then
+        if $ping_cmd $ping_args "$host" >/dev/null 2>&1; then
             info "  ✓ $host 可达"
         else
             warn "  ✗ $host 不可达（可能影响安装）"
@@ -274,16 +296,42 @@ check_system() {
     case "$OS_ID" in
         ubuntu|debian)
             info "系统兼容性检查通过（$OS_ID $OS_VERSION_ID）"
+            PKG_MANAGER="apt"
+            ;;
+        centos|rhel|rocky|almalinux|fedora|amzn)
+            info "系统兼容性检查通过（$OS_ID $OS_VERSION_ID）"
+            if command_exists dnf; then
+                PKG_MANAGER="dnf"
+            elif command_exists yum; then
+                PKG_MANAGER="yum"
+            else
+                warn "未检测到 dnf 或 yum 包管理器"
+            fi
+            info "包管理器：$PKG_MANAGER"
             ;;
         *)
-            warn "检测到非 Ubuntu/Debian 系统（$OS_ID），脚本可能不完全兼容。"
-            warn "推荐使用 Ubuntu 20.04+ 或 Debian 11+ 系统。"
+            warn "检测到非 Ubuntu/Debian/CentOS 系统（$OS_ID），脚本可能不完全兼容。"
+            warn "推荐使用 Ubuntu 20.04+ / Debian 11+ / CentOS 8+ 系统。"
             if ! confirm "是否继续？" "n"; then
                 info "用户取消，退出。"
                 exit 0
             fi
+            # 尝试自动检测包管理器
+            if command_exists apt-get; then
+                PKG_MANAGER="apt"
+            elif command_exists dnf; then
+                PKG_MANAGER="dnf"
+            elif command_exists yum; then
+                PKG_MANAGER="yum"
+            fi
             ;;
     esac
+
+    if [ -z "$PKG_MANAGER" ]; then
+        error "无法确定包管理器，请手动安装依赖后重试"
+        exit 1
+    fi
+    info "包管理器：$PKG_MANAGER"
 
     # 检查 CPU 架构
     local arch=$(dpkg --print-architecture 2>/dev/null || uname -m)
@@ -370,60 +418,111 @@ install_docker() {
         info "未检测到 Docker，开始安装..."
     fi
 
-    # 更新 apt 并安装依赖
+    # 更新系统包管理器并安装依赖
     step "更新系统包管理器并安装依赖..."
-    apt-get update -y >/dev/null 2>&1
-    apt-get install -y \
-        ca-certificates \
-        curl \
-        gnupg \
-        lsb-release \
-        wget \
-        software-properties-common \
-        iptables \
-        >/dev/null 2>&1
+    if [ "$PKG_MANAGER" = "apt" ]; then
+        apt-get update -y >/dev/null 2>&1
+        apt-get install -y \
+            ca-certificates \
+            curl \
+            gnupg \
+            lsb-release \
+            wget \
+            software-properties-common \
+            iptables \
+            >/dev/null 2>&1
+    else
+        # yum/dnf 安装依赖
+        $PKG_MANAGER install -y \
+            ca-certificates \
+            curl \
+            gnupg2 \
+            wget \
+            iptables \
+            >/dev/null 2>&1 || true
+        # 安装 config-manager 插件（CentOS 需要）
+        if [ "$OS_ID" = "centos" ] || [ "$OS_ID" = "rhel" ]; then
+            $PKG_MANAGER install -y "$PKG_MANAGER-utils" >/dev/null 2>&1 || true
+        fi
+    fi
 
     # 安装 Docker GPG key
     step "添加 Docker 官方 GPG 密钥..."
-    install -m 0755 -d /etc/apt/keyrings
-    # 先清理旧的 key 文件
-    rm -f /etc/apt/keyrings/docker.gpg 2>/dev/null || true
-    if ! curl -fsSL https://download.docker.com/linux/$OS_ID/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null; then
-        warn "Docker 官方源获取 GPG 密钥失败，尝试使用国内镜像源..."
-        curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/$OS_ID/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null
+    if [ "$PKG_MANAGER" = "apt" ]; then
+        install -m 0755 -d /etc/apt/keyrings
+        rm -f /etc/apt/keyrings/docker.gpg 2>/dev/null || true
+        if ! curl -fsSL https://download.docker.com/linux/$OS_ID/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null; then
+            warn "Docker 官方源获取 GPG 密钥失败，尝试使用国内镜像源..."
+            curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/$OS_ID/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg 2>/dev/null
+        fi
+        chmod a+r /etc/apt/keyrings/docker.gpg
+    else
+        # yum/dnf 方式添加 GPG key
+        rm -f /etc/yum.repos.d/docker-ce.repo 2>/dev/null || true
+        if [ "$OS_ID" = "fedora" ]; then
+            DOCKER_YUM_CONFIG="https://download.docker.com/linux/fedora/docker-ce.repo"
+        else
+            DOCKER_YUM_CONFIG="https://download.docker.com/linux/centos/docker-ce.repo"
+        fi
+        if ! $PKG_MANAGER config-manager --add-repo "$DOCKER_YUM_CONFIG" 2>/dev/null; then
+            warn "添加 Docker 官方源失败，尝试使用国内镜像源..."
+            if [ "$OS_ID" = "fedora" ]; then
+                $PKG_MANAGER config-manager --add-repo "https://mirrors.aliyun.com/docker-ce/linux/fedora/docker-ce.repo" 2>/dev/null || true
+            else
+                $PKG_MANAGER config-manager --add-repo "https://mirrors.aliyun.com/docker-ce/linux/centos/docker-ce.repo" 2>/dev/null || true
+            fi
+        fi
+        # 设置阿里云镜像加速 yum 源（提速）
+        if [ -f /etc/yum.repos.d/docker-ce.repo ]; then
+            sed -i 's|https://download.docker.com|https://mirrors.aliyun.com/docker-ce|g' /etc/yum.repos.d/docker-ce.repo 2>/dev/null || true
+        fi
     fi
-    chmod a+r /etc/apt/keyrings/docker.gpg
 
     # 添加 Docker apt 源
-    step "添加 Docker apt 源..."
-    DOCKER_REPO="https://download.docker.com/linux/$OS_ID"
-    echo \
-        "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] ${DOCKER_REPO} \
-        $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list >/dev/null
+    if [ "$PKG_MANAGER" = "apt" ]; then
+        step "添加 Docker apt 源..."
+        DOCKER_REPO="https://download.docker.com/linux/$OS_ID"
+        echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] ${DOCKER_REPO} \
+            $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list >/dev/null
+    fi
 
     # 安装 Docker
     step "安装 Docker CE..."
-    apt-get update -y >/dev/null 2>&1
-    if ! apt-get install -y \
-        docker-ce \
-        docker-ce-cli \
-        containerd.io \
-        docker-buildx-plugin \
-        docker-compose-plugin \
-        >/dev/null 2>&1; then
-        warn "从 Docker 官方源安装失败，尝试使用阿里云镜像源..."
-        # 替换为阿里云源
-        echo \
-            "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://mirrors.aliyun.com/docker-ce/linux/$OS_ID \
-            $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list >/dev/null
+    if [ "$PKG_MANAGER" = "apt" ]; then
         apt-get update -y >/dev/null 2>&1
-        apt-get install -y \
+        if ! apt-get install -y \
             docker-ce \
             docker-ce-cli \
             containerd.io \
             docker-buildx-plugin \
             docker-compose-plugin \
-            >/dev/null 2>&1
+            >/dev/null 2>&1; then
+            warn "从 Docker 官方源安装失败，尝试使用阿里云镜像源..."
+            echo \
+                "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://mirrors.aliyun.com/docker-ce/linux/$OS_ID \
+                $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list >/dev/null
+            apt-get update -y >/dev/null 2>&1
+            apt-get install -y \
+                docker-ce \
+                docker-ce-cli \
+                containerd.io \
+                docker-buildx-plugin \
+                docker-compose-plugin \
+                >/dev/null 2>&1
+        fi
+    else
+        # yum/dnf 安装
+        $PKG_MANAGER makecache 2>/dev/null || true
+        if ! $PKG_MANAGER install -y \
+            docker-ce \
+            docker-ce-cli \
+            containerd.io \
+            docker-buildx-plugin \
+            docker-compose-plugin \
+            >/dev/null 2>&1; then
+            warn "Docker 安装失败，请检查仓库配置"
+        fi
     fi
 
     # 启动 Docker 并设置开机自启
@@ -538,6 +637,296 @@ configure_firewall() {
     fi
 }
 
+# ============================== 容器资源限制 ==============================
+
+# 配置容器资源限制
+configure_resource_limits() {
+    print_separator
+    echo -e "${CYAN}[容器资源限制]${NC}"
+    print_separator
+
+    echo -e "  可为 AstrBot 和 NapCat 容器设置内存和 CPU 使用上限"
+    echo -e "  输入 0 表示不限制"
+    echo ""
+
+    if [ "$NON_INTERACTIVE" != true ]; then
+        read -p "  AstrBot 内存限制（MB，如 512，默认 0）: " abot_mem
+        ASTRBOT_MEM_LIMIT="${abot_mem:-0}"
+
+        read -p "  AstrBot CPU 限制（核心数，如 1.0，默认 0）: " abot_cpu
+        ASTRBOT_CPU_LIMIT="${abot_cpu:-0}"
+
+        read -p "  NapCat 内存限制（MB，如 256，默认 0）: " ncat_mem
+        NAPCAT_MEM_LIMIT="${ncat_mem:-0}"
+
+        read -p "  NapCat CPU 限制（核心数，如 0.5，默认 0）: " ncat_cpu
+        NAPCAT_CPU_LIMIT="${ncat_cpu:-0}"
+    fi
+
+    echo ""
+    info "当前资源限制配置："
+    echo -e "  AstrBot：内存 ${ASTRBOT_MEM_LIMIT}MB，CPU ${ASTRBOT_CPU_LIMIT} 核"
+    echo -e "  NapCat：内存 ${NAPCAT_MEM_LIMIT}MB，CPU ${NAPCAT_CPU_LIMIT} 核"
+
+    # 如果容器已运行，提示需要重建
+    local need_recreate=false
+    if docker ps -a --format '{{.Names}}' | grep -q "^${ASTRBOT_CONTAINER_NAME}$"; then
+        need_recreate=true
+    fi
+    if docker ps -a --format '{{.Names}}' | grep -q "^${NAPCAT_CONTAINER_NAME}$"; then
+        need_recreate=true
+    fi
+
+    if [ "$need_recreate" = true ]; then
+        warn "检测到已有容器，资源限制需重建容器后生效"
+        if confirm "是否立即重建容器？" "n"; then
+            # 重建已有容器
+            if docker ps -a --format '{{.Names}}' | grep -q "^${ASTRBOT_CONTAINER_NAME}$"; then
+                update_astrbot
+            fi
+            if docker ps -a --format '{{.Names}}' | grep -q "^${NAPCAT_CONTAINER_NAME}$"; then
+                update_napcat
+            fi
+            info "容器已重建，资源限制已生效"
+        else
+            tip "下次部署或更新时资源限制将自动生效"
+        fi
+    else
+        info "资源限制已配置，将在下次部署时生效"
+    fi
+}
+
+# 获取 docker run 资源限制参数
+get_resource_limit_args() {
+    local container_type="$1"
+    local args=""
+
+    if [ "$container_type" = "astrbot" ]; then
+        if [ "$ASTRBOT_MEM_LIMIT" != "0" ] && [ -n "$ASTRBOT_MEM_LIMIT" ]; then
+            args="$args --memory=${ASTRBOT_MEM_LIMIT}m"
+        fi
+        if [ "$ASTRBOT_CPU_LIMIT" != "0" ] && [ -n "$ASTRBOT_CPU_LIMIT" ]; then
+            args="$args --cpus=${ASTRBOT_CPU_LIMIT}"
+        fi
+    elif [ "$container_type" = "napcat" ]; then
+        if [ "$NAPCAT_MEM_LIMIT" != "0" ] && [ -n "$NAPCAT_MEM_LIMIT" ]; then
+            args="$args --memory=${NAPCAT_MEM_LIMIT}m"
+        fi
+        if [ "$NAPCAT_CPU_LIMIT" != "0" ] && [ -n "$NAPCAT_CPU_LIMIT" ]; then
+            args="$args --cpus=${NAPCAT_CPU_LIMIT}"
+        fi
+    fi
+    echo "$args"
+}
+
+# ============================== 定时备份 ==============================
+
+# 配置定时备份
+setup_auto_backup() {
+    print_separator
+    echo -e "${CYAN}[定时备份配置]${NC}"
+    print_separator
+
+    echo -e "  设置定时自动备份数据"
+    echo ""
+    echo -e "  ${YELLOW}1${NC} - 每天凌晨 3:00 自动备份"
+    echo -e "  ${YELLOW}2${NC} - 每周日凌晨 3:00 自动备份"
+    echo -e "  ${YELLOW}3${NC} - 每 12 小时自动备份"
+    echo -e "  ${YELLOW}4${NC} - 取消定时备份"
+    echo -e "  ${YELLOW}0${NC} - 返回"
+
+    local backup_choice
+    if [ "$NON_INTERACTIVE" = true ]; then
+        backup_choice="1"
+        info "非交互模式：默认每天凌晨 3:00 备份"
+    else
+        read -p "请选择 (0-4): " backup_choice
+    fi
+
+    local cron_schedule=""
+    local cron_desc=""
+
+    case "$backup_choice" in
+        1)
+            cron_schedule="0 3 * * *"
+            cron_desc="每天凌晨 3:00"
+            ;;
+        2)
+            cron_schedule="0 3 * * 0"
+            cron_desc="每周日凌晨 3:00"
+            ;;
+        3)
+            cron_schedule="0 */12 * * *"
+            cron_desc="每 12 小时"
+            ;;
+        4)
+            # 取消定时备份
+            local script_path=$(readlink -f "$0" 2>/dev/null || echo "$0")
+            crontab -l 2>/dev/null | grep -v "$script_path.*backup" | crontab - 2>/dev/null || true
+            info "已取消定时备份任务"
+            return 0
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            warn "无效选择"
+            return 0
+            ;;
+    esac
+
+    # 确保 crontab 已安装
+    if ! command_exists crontab; then
+        warn "crontab 未安装，正在安装..."
+        if [ "$PKG_MANAGER" = "apt" ]; then
+            apt-get install -y cron >/dev/null 2>&1
+            systemctl start cron 2>/dev/null || systemctl start crond 2>/dev/null || true
+            systemctl enable cron 2>/dev/null || systemctl enable crond 2>/dev/null || true
+        else
+            $PKG_MANAGER install -y cronie crontabs >/dev/null 2>&1 || true
+            systemctl start crond 2>/dev/null || true
+            systemctl enable crond 2>/dev/null || true
+        fi
+    fi
+
+    local script_path=$(readlink -f "$0" 2>/dev/null || echo "$0")
+
+    # 先移除旧的定时备份任务
+    crontab -l 2>/dev/null | grep -v "$script_path.*backup" | crontab - 2>/dev/null || true
+
+    # 添加新的定时备份任务
+    (crontab -l 2>/dev/null; echo "$cron_schedule $script_path -y backup >/dev/null 2>&1") | crontab - 2>/dev/null
+
+    info "定时备份已配置：$cron_desc"
+    tip "备份保留数量：最近 $BACKUP_KEEP_COUNT 个"
+
+    # 显示当前 crontab
+    echo ""
+    info "当前定时任务："
+    crontab -l 2>/dev/null | grep -n "$script_path" || echo "  （无）"
+}
+
+# ============================== 容器进入 Shell ==============================
+
+# 进入容器 Shell
+enter_container_shell() {
+    print_separator
+    echo -e "${CYAN}[进入容器 Shell]${NC}"
+    print_separator
+
+    echo -e "  ${YELLOW}1${NC} - 进入 AstrBot 容器"
+    echo -e "  ${YELLOW}2${NC} - 进入 NapCat 容器"
+    echo -e "  ${YELLOW}0${NC} - 返回"
+
+    local shell_choice
+    if [ "$NON_INTERACTIVE" = true ]; then
+        shell_choice="1"
+    else
+        read -p "请选择 (0-2): " shell_choice
+    fi
+
+    local target_container=""
+    case "$shell_choice" in
+        1)
+            target_container="$ASTRBOT_CONTAINER_NAME"
+            ;;
+        2)
+            target_container="$NAPCAT_CONTAINER_NAME"
+            ;;
+        0)
+            return 0
+            ;;
+        *)
+            warn "无效选择"
+            return 0
+            ;;
+    esac
+
+    if docker ps --format '{{.Names}}' | grep -q "^${target_container}$"; then
+        info "进入 $target_container 容器（输入 exit 退出）..."
+        echo ""
+        # 尝试 bash，失败则用 sh
+        if docker exec -it "$target_container" bash 2>/dev/null; then
+            :
+        elif docker exec -it "$target_container" sh 2>/dev/null; then
+            :
+        else
+            error "无法进入容器 $target_container"
+        fi
+    else
+        warn "容器 $target_container 未运行"
+    fi
+}
+
+# ============================== 自定义端口配置 ==============================
+
+# 配置自定义端口
+configure_custom_ports() {
+    print_separator
+    echo -e "${CYAN}[自定义端口配置]${NC}"
+    print_separator
+
+    echo -e "  当前端口配置："
+    echo -e "  AstrBot：$ASTRBOT_PORT"
+    echo -e "  NapCat：$NAPCAT_PORT"
+    echo ""
+
+    if [ "$NON_INTERACTIVE" = true ]; then
+        info "非交互模式：使用默认端口"
+        return 0
+    fi
+
+    read -p "  AstrBot 端口（默认 $ASTRBOT_PORT）: " new_abot_port
+    if [ -n "$new_abot_port" ]; then
+        if [[ "$new_abot_port" =~ ^[0-9]+$ ]] && [ "$new_abot_port" -ge 1 ] && [ "$new_abot_port" -le 65535 ]; then
+            ASTRBOT_PORT="$new_abot_port"
+            info "AstrBot 端口已设置为：$ASTRBOT_PORT"
+        else
+            warn "无效端口号，保持默认"
+        fi
+    fi
+
+    read -p "  NapCat 端口（默认 $NAPCAT_PORT）: " new_napcat_port
+    if [ -n "$new_napcat_port" ]; then
+        if [[ "$new_napcat_port" =~ ^[0-9]+$ ]] && [ "$new_napcat_port" -ge 1 ] && [ "$new_napcat_port" -le 65535 ]; then
+            NAPCAT_PORT="$new_napcat_port"
+            info "NapCat 端口已设置为：$NAPCAT_PORT"
+        else
+            warn "无效端口号，保持默认"
+        fi
+    fi
+
+    echo ""
+    info "当前端口配置："
+    echo -e "  AstrBot：$ASTRBOT_PORT"
+    echo -e "  NapCat：$NAPCAT_PORT"
+
+    # 检查端口是否被占用
+    check_ports
+
+    # 如果容器已运行，提示需要重建
+    local has_container=false
+    if docker ps -a --format '{{.Names}}' | grep -q "^${ASTRBOT_CONTAINER_NAME}$"; then
+        has_container=true
+    fi
+    if docker ps -a --format '{{.Names}}' | grep -q "^${NAPCAT_CONTAINER_NAME}$"; then
+        has_container=true
+    fi
+
+    if [ "$has_container" = true ]; then
+        warn "检测到已有容器，端口修改需重建容器后生效"
+        if confirm "是否立即重建容器？" "n"; then
+            if docker ps -a --format '{{.Names}}' | grep -q "^${ASTRBOT_CONTAINER_NAME}$"; then
+                update_astrbot
+            fi
+            if docker ps -a --format '{{.Names}}' | grep -q "^${NAPCAT_CONTAINER_NAME}$"; then
+                update_napcat
+            fi
+            info "容器已重建，新端口已生效"
+        fi
+    fi
+}
+
 # 生成 Docker Compose 文件
 generate_compose_file() {
     step "生成 docker-compose.yml 配置文件..."
@@ -555,6 +944,17 @@ services:
       - "${ASTRBOT_PORT}:6185"
     volumes:
       - ${ASTRBOT_DATA_DIR}:/AstrBot/data
+EOF
+
+    # 追加 AstrBot 资源限制（如果有）
+    if [ "$ASTRBOT_MEM_LIMIT" != "0" ] && [ -n "$ASTRBOT_MEM_LIMIT" ]; then
+        echo "    mem_limit: ${ASTRBOT_MEM_LIMIT}m" >> "$COMPOSE_FILE"
+    fi
+    if [ "$ASTRBOT_CPU_LIMIT" != "0" ] && [ -n "$ASTRBOT_CPU_LIMIT" ]; then
+        echo "    cpus: ${ASTRBOT_CPU_LIMIT}" >> "$COMPOSE_FILE"
+    fi
+
+    cat >> "$COMPOSE_FILE" <<EOF
     networks:
       - astrbot-net
 
@@ -571,6 +971,17 @@ services:
     volumes:
       - ${NAPCAT_DATA_DIR}:/app/napcat/config
       - ${NAPCAT_DATA_DIR}/QQ:/app/.config/QQ
+EOF
+
+    # 追加 NapCat 资源限制（如果有）
+    if [ "$NAPCAT_MEM_LIMIT" != "0" ] && [ -n "$NAPCAT_MEM_LIMIT" ]; then
+        echo "    mem_limit: ${NAPCAT_MEM_LIMIT}m" >> "$COMPOSE_FILE"
+    fi
+    if [ "$NAPCAT_CPU_LIMIT" != "0" ] && [ -n "$NAPCAT_CPU_LIMIT" ]; then
+        echo "    cpus: ${NAPCAT_CPU_LIMIT}" >> "$COMPOSE_FILE"
+    fi
+
+    cat >> "$COMPOSE_FILE" <<EOF
     networks:
       - astrbot-net
 
@@ -961,11 +1372,13 @@ deploy_astrbot() {
 
     # 创建并启动容器
     info "创建并启动 AstrBot 容器..."
+    local resource_args=$(get_resource_limit_args "astrbot")
     docker run -d \
         --name "$ASTRBOT_CONTAINER_NAME" \
         --restart=always \
         -p "${ASTRBOT_PORT}:6185" \
         -v "${ASTRBOT_DATA_DIR}:/AstrBot/data" \
+        $resource_args \
         "$ASTRBOT_IMAGE"
 
     # 等待并验证容器状态
@@ -994,11 +1407,13 @@ update_astrbot() {
 
     # 重新创建容器
     info "重新创建 AstrBot 容器..."
+    local resource_args=$(get_resource_limit_args "astrbot")
     docker run -d \
         --name "$ASTRBOT_CONTAINER_NAME" \
         --restart=always \
         -p "${ASTRBOT_PORT}:6185" \
         -v "${ASTRBOT_DATA_DIR}:/AstrBot/data" \
+        $resource_args \
         "$ASTRBOT_IMAGE"
 
     if docker ps --format '{{.Names}}' | grep -q "^${ASTRBOT_CONTAINER_NAME}$"; then
@@ -1064,6 +1479,7 @@ deploy_napcat() {
 
     # 创建并启动容器
     info "创建并启动 NapCat 容器..."
+    local resource_args=$(get_resource_limit_args "napcat")
     docker run -d \
         --name "$NAPCAT_CONTAINER_NAME" \
         --restart=always \
@@ -1073,6 +1489,7 @@ deploy_napcat() {
         -p "${NAPCAT_PORT}:6099" \
         -v "${NAPCAT_DATA_DIR}:/app/napcat/config" \
         -v "${NAPCAT_DATA_DIR}/QQ:/app/.config/QQ" \
+        $resource_args \
         "$NAPCAT_IMAGE"
 
     # 等待并验证容器状态
@@ -1101,6 +1518,7 @@ update_napcat() {
 
     # 重新创建容器
     info "重新创建 NapCat 容器..."
+    local resource_args=$(get_resource_limit_args "napcat")
     docker run -d \
         --name "$NAPCAT_CONTAINER_NAME" \
         --restart=always \
@@ -1110,6 +1528,7 @@ update_napcat() {
         -p "${NAPCAT_PORT}:6099" \
         -v "${NAPCAT_DATA_DIR}:/app/napcat/config" \
         -v "${NAPCAT_DATA_DIR}/QQ:/app/.config/QQ" \
+        $resource_args \
         "$NAPCAT_IMAGE"
 
     if docker ps --format '{{.Names}}' | grep -q "^${NAPCAT_CONTAINER_NAME}$"; then
@@ -1505,19 +1924,23 @@ main_menu() {
         echo -e "  ${YELLOW}11${NC} - 重启服务"
         echo -e "  ${YELLOW}12${NC} - 查看日志"
         echo -e "  ${YELLOW}13${NC} - 卸载服务"
+        echo -e "  ${YELLOW}14${NC} - 进入容器 Shell"
         echo -e "  ${CYAN}—— 运维 ——${NC}"
-        echo -e "  ${YELLOW}14${NC} - 备份数据"
-        echo -e "  ${YELLOW}15${NC} - 恢复数据"
-        echo -e "  ${YELLOW}16${NC} - 配置防火墙"
-        echo -e "  ${YELLOW}17${NC} - Docker 资源清理"
-        echo -e "  ${YELLOW}18${NC} - 检查端口占用"
-        echo -e "  ${YELLOW}19${NC} - 系统信息"
-        echo -e "  ${YELLOW}20${NC} - 服务健康检查"
+        echo -e "  ${YELLOW}15${NC} - 备份数据"
+        echo -e "  ${YELLOW}16${NC} - 恢复数据"
+        echo -e "  ${YELLOW}17${NC} - 定时备份配置"
+        echo -e "  ${YELLOW}18${NC} - 配置防火墙"
+        echo -e "  ${YELLOW}19${NC} - Docker 资源清理"
+        echo -e "  ${YELLOW}20${NC} - 检查端口占用"
+        echo -e "  ${YELLOW}21${NC} - 自定义端口配置"
+        echo -e "  ${YELLOW}22${NC} - 容器资源限制"
+        echo -e "  ${YELLOW}23${NC} - 系统信息"
+        echo -e "  ${YELLOW}24${NC} - 服务健康检查"
         echo -e "  ${CYAN}—— 其他 ——${NC}"
-        echo -e "  ${YELLOW}21${NC} - 更新脚本（自更新）"
+        echo -e "  ${YELLOW}25${NC} - 更新脚本（自更新）"
         echo -e "  ${YELLOW}0${NC}  - 退出"
         print_separator
-        read -p "  请输入序号 (0-21): " CHOICE
+        read -p "  请输入序号 (0-25): " CHOICE
 
         case "$CHOICE" in
             1)
@@ -1595,27 +2018,39 @@ main_menu() {
                 fi
                 ;;
             14)
-                backup_data
+                enter_container_shell
                 ;;
             15)
-                restore_data
+                backup_data
                 ;;
             16)
-                configure_firewall
+                restore_data
                 ;;
             17)
-                docker_cleanup
+                setup_auto_backup
                 ;;
             18)
-                check_ports
+                configure_firewall
                 ;;
             19)
-                show_system_info
+                docker_cleanup
                 ;;
             20)
-                health_check
+                check_ports
                 ;;
             21)
+                configure_custom_ports
+                ;;
+            22)
+                configure_resource_limits
+                ;;
+            23)
+                show_system_info
+                ;;
+            24)
+                health_check
+                ;;
+            25)
                 self_update
                 ;;
             0)
@@ -1719,20 +2154,27 @@ AstrBot 一键部署脚本 v${VERSION}
   stop             停止服务
   restart          重启服务
   status           查看容器状态
-  logs             查看日志（需要 -t astrbot|napcat）
+  logs             查看日志
+  shell            进入容器 Shell
   uninstall        卸载服务
   backup           备份数据
   restore          恢复数据
+  auto-backup      配置定时自动备份
   firewall         配置防火墙
   cleanup          清理 Docker 无用资源
+  ports            自定义端口配置
+  limits           容器资源限制配置
   info             查看系统信息
   health           服务健康检查
-  self-update       更新脚本自身
+  self-update      更新脚本自身
   help             显示此帮助信息
 
 选项:
   -y, --yes             非交互模式（自动确认所有提示）
   -m, --method METHOD   部署方式：docker 或 compose（默认: docker）
+  -p, --port SVC=PORT   自定义端口（如 -p astrbot=8080 -p napcat=6090）
+  --mem SVC=MB          内存限制（如 --mem astrbot=512）
+  --cpu SVC=N           CPU 限制（如 --cpu astrbot=1.0）
   -v, --version         显示版本号
   -h, --help            显示帮助信息
 
@@ -1743,11 +2185,20 @@ AstrBot 一键部署脚本 v${VERSION}
   # 使用 Docker Compose 方式部署
   $0 -m compose install
 
+  # 自定义端口安装
+  $0 -y -p astrbot=8080 -p napcat=6090 install
+
+  # 限制资源安装
+  $0 -y --mem astrbot=512 --cpu astrbot=1.0 install
+
   # 启动所有服务
   $0 start
 
   # 备份数据
   $0 backup
+
+  # 配置定时备份
+  $0 auto-backup
 
 HELP
 }
@@ -1762,6 +2213,42 @@ parse_args() {
                 ;;
             -m|--method)
                 DEPLOY_METHOD="$2"
+                shift 2
+                ;;
+            -p|--port)
+                # 解析 -p astrbot=8080 格式
+                local port_arg="$2"
+                local port_svc="${port_arg%%=*}"
+                local port_val="${port_arg#*=}"
+                case "$port_svc" in
+                    astrbot) ASTRBOT_PORT="$port_val" ;;
+                    napcat) NAPCAT_PORT="$port_val" ;;
+                    *) warn "未知服务名：$port_svc（支持：astrbot, napcat）" ;;
+                esac
+                shift 2
+                ;;
+            --mem)
+                # 解析 --mem astrbot=512 格式
+                local mem_arg="$2"
+                local mem_svc="${mem_arg%%=*}"
+                local mem_val="${mem_arg#*=}"
+                case "$mem_svc" in
+                    astrbot) ASTRBOT_MEM_LIMIT="$mem_val" ;;
+                    napcat) NAPCAT_MEM_LIMIT="$mem_val" ;;
+                    *) warn "未知服务名：$mem_svc" ;;
+                esac
+                shift 2
+                ;;
+            --cpu)
+                # 解析 --cpu astrbot=1.0 格式
+                local cpu_arg="$2"
+                local cpu_svc="${cpu_arg%%=*}"
+                local cpu_val="${cpu_arg#*=}"
+                case "$cpu_svc" in
+                    astrbot) ASTRBOT_CPU_LIMIT="$cpu_val" ;;
+                    napcat) NAPCAT_CPU_LIMIT="$cpu_val" ;;
+                    *) warn "未知服务名：$cpu_svc" ;;
+                esac
                 shift 2
                 ;;
             docker|compose)
@@ -1805,6 +2292,10 @@ parse_args() {
                 RUN_COMMAND="logs"
                 shift
                 ;;
+            shell)
+                RUN_COMMAND="shell"
+                shift
+                ;;
             uninstall)
                 RUN_COMMAND="uninstall"
                 shift
@@ -1817,12 +2308,24 @@ parse_args() {
                 RUN_COMMAND="restore"
                 shift
                 ;;
+            auto-backup)
+                RUN_COMMAND="auto-backup"
+                shift
+                ;;
             firewall)
                 RUN_COMMAND="firewall"
                 shift
                 ;;
             cleanup)
                 RUN_COMMAND="cleanup"
+                shift
+                ;;
+            ports)
+                RUN_COMMAND="ports"
+                shift
+                ;;
+            limits)
+                RUN_COMMAND="limits"
                 shift
                 ;;
             info)
@@ -1903,6 +2406,9 @@ run_command() {
         logs)
             show_logs
             ;;
+        shell)
+            enter_container_shell
+            ;;
         uninstall)
             if [ "$DEPLOY_METHOD" = "compose" ] && [ -f "$COMPOSE_FILE" ]; then
                 uninstall_via_compose
@@ -1916,11 +2422,20 @@ run_command() {
         restore)
             restore_data
             ;;
+        auto-backup)
+            setup_auto_backup
+            ;;
         firewall)
             configure_firewall
             ;;
         cleanup)
             docker_cleanup
+            ;;
+        ports)
+            configure_custom_ports
+            ;;
+        limits)
+            configure_resource_limits
             ;;
         info)
             show_system_info

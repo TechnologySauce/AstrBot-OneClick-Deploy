@@ -1,6 +1,6 @@
 # AstrBot 一键部署脚本
 
-> 一键安装 Docker 并部署 AstrBot / Napcat 服务，支持 Docker Compose、数据备份恢复、防火墙配置等。
+> 一键安装 Docker 并部署 AstrBot / Napcat 服务，支持多系统、Docker Compose、资源限制、定时备份、自定义端口等。
 
 ## 功能特点
 
@@ -9,7 +9,7 @@
 2. **Docker 镜像加速** — 自动配置 7 个国内镜像加速源，提升拉取速度
 3. **容器自启动策略** — 所有容器均设置 `--restart=always`，开机即启动
 4. **数据卷持久化存储** — 数据独立于容器，升级不丢失配置
-5. **兼容性** — 支持 Ubuntu 20.04+ / Debian 11+ 系统
+5. **多系统兼容** — 支持 Ubuntu/Debian/CentOS/RHEL/Rocky/AlmaLinux/Fedora，自动检测包管理器
 6. **选择性安装** — 支持按需选择部署 AstrBot 或 NapCat
 7. **容器更新** — 一键拉取最新镜像并重建容器
 
@@ -26,6 +26,14 @@
 ### v2.1 新增功能
 16. **系统信息查看** — 一键查看操作系统、CPU、内存、磁盘、Docker 运行状态、网络信息
 17. **服务健康检查** — 检查容器运行状态和 HTTP 可达性，快速诊断服务异常
+
+### v3.0 新增功能
+18. **多系统支持** — 新增 CentOS/RHEL/Rocky/AlmaLinux/Fedora 支持，自动检测 apt/yum/dnf 包管理器
+19. **容器资源限制** — 为 AstrBot 和 NapCat 容器分别设置内存和 CPU 使用上限
+20. **定时自动备份** — 通过 crontab 配置每天/每周/每 12 小时自动备份，支持取消
+21. **进入容器 Shell** — 一键进入 AstrBot 或 NapCat 容器的交互式终端
+22. **自定义端口配置** — 交互式修改 AstrBot 和 NapCat 的监听端口，自动检查冲突
+23. **命令行端口和资源参数** — 支持 `-p`、`--mem`、`--cpu` 参数直接指定端口和资源限制
 
 ## 使用方法
 
@@ -48,6 +56,12 @@ wget -O astrbot-install.sh https://gitee.com/einternet/AstrBot-OneClick-Deploy/r
 # 或者
 ./astrbot-install.sh compose -y install
 
+# 自定义端口安装
+./astrbot-install.sh -y -p astrbot=8080 -p napcat=6090 install
+
+# 限制资源安装
+./astrbot-install.sh -y --mem astrbot=512 --cpu astrbot=1.0 install
+
 # 更新所有服务
 ./astrbot-install.sh update
 
@@ -59,15 +73,27 @@ wget -O astrbot-install.sh https://gitee.com/einternet/AstrBot-OneClick-Deploy/r
 # 查看容器状态
 ./astrbot-install.sh status
 
+# 进入容器 Shell
+./astrbot-install.sh shell
+
 # 备份 / 恢复数据
 ./astrbot-install.sh backup
 ./astrbot-install.sh restore
+
+# 配置定时自动备份
+./astrbot-install.sh auto-backup
 
 # 配置防火墙
 ./astrbot-install.sh firewall
 
 # 清理 Docker 无用资源
 ./astrbot-install.sh cleanup
+
+# 自定义端口配置
+./astrbot-install.sh ports
+
+# 容器资源限制配置
+./astrbot-install.sh limits
 
 # 查看系统信息
 ./astrbot-install.sh info
@@ -88,6 +114,9 @@ wget -O astrbot-install.sh https://gitee.com/einternet/AstrBot-OneClick-Deploy/r
 |------|------|
 | `-y, --yes` | 非交互模式，自动确认所有提示 |
 | `-m, --method METHOD` | 部署方式：`docker` 或 `compose`（默认: docker） |
+| `-p, --port SVC=PORT` | 自定义端口（如 `-p astrbot=8080 -p napcat=6090`） |
+| `--mem SVC=MB` | 内存限制（如 `--mem astrbot=512`） |
+| `--cpu SVC=N` | CPU 限制（如 `--cpu astrbot=1.0`） |
 | `-v, --version` | 显示版本号 |
 | `-h, --help` | 显示帮助信息 |
 
@@ -113,28 +142,32 @@ wget -O astrbot-install.sh https://gitee.com/einternet/AstrBot-OneClick-Deploy/r
 | 11 | 重启服务 | 重启所有已部署的容器 |
 | 12 | 查看日志 | 实时查看容器日志 |
 | 13 | 卸载服务 | 删除容器和镜像（保留数据） |
+| 14 | 进入容器 Shell | 进入 AstrBot 或 NapCat 容器终端 |
 
 ### 运维菜单
 | 序号 | 功能 | 说明 |
 |------|------|------|
-| 14 | 备份数据 | 备份 AstrBot 和 NapCat 数据（自动保留最近 5 个备份） |
-| 15 | 恢复数据 | 从备份中恢复数据 |
-| 16 | 配置防火墙 | 自动配置 UFW/firewalld 开放端口 |
-| 17 | Docker 清理 | 清理无用镜像、容器、网络和卷 |
-| 18 | 检查端口占用 | 检查所需端口是否被占用 |
-| 19 | 系统信息 | 查看操作系统、CPU、内存、磁盘、Docker 运行状态 |
-| 20 | 服务健康检查 | 检查容器运行状态和 HTTP 可达性 |
+| 15 | 备份数据 | 备份 AstrBot 和 NapCat 数据（自动保留最近 5 个备份） |
+| 16 | 恢复数据 | 从备份中恢复数据 |
+| 17 | 定时备份配置 | 配置 crontab 定时自动备份 |
+| 18 | 配置防火墙 | 自动配置 UFW/firewalld 开放端口 |
+| 19 | Docker 清理 | 清理无用镜像、容器、网络和卷 |
+| 20 | 检查端口占用 | 检查所需端口是否被占用 |
+| 21 | 自定义端口配置 | 交互式修改 AstrBot 和 NapCat 端口 |
+| 22 | 容器资源限制 | 为容器设置内存/CPU 上限 |
+| 23 | 系统信息 | 查看操作系统、CPU、内存、磁盘、Docker 运行状态 |
+| 24 | 服务健康检查 | 检查容器运行状态和 HTTP 可达性 |
 
 ### 其他
 | 序号 | 功能 | 说明 |
 |------|------|------|
-| 21 | 更新脚本 | 检测并更新到最新版本 |
+| 25 | 更新脚本 | 检测并更新到最新版本 |
 | 0 | 退出 | 退出脚本 |
 
 ## 容器配置信息
 
-| 项目 | 容器名 | 镜像 | 端口 | 数据目录 |
-|------|--------|------|------|----------|
+| 项目 | 容器名 | 镜像 | 默认端口 | 数据目录 |
+|------|--------|------|----------|----------|
 | AstrBot | astrbot | snowykami/astrbot:latest | 6185 | /home/astrbot/data |
 | NapCat | napcat | mlikiowa/napcat-docker:latest | 6099 | /home/napcat/data |
 
@@ -159,7 +192,7 @@ wget -O astrbot-install.sh https://gitee.com/einternet/AstrBot-OneClick-Deploy/r
 
 ## 系统要求
 
-- 操作系统：Ubuntu 20.04+ / Debian 11+（其他系统可能不完全兼容）
+- 操作系统：Ubuntu 20.04+ / Debian 11+ / CentOS 8+ / RHEL / Rocky / AlmaLinux / Fedora
 - 权限：root 用户或 sudo 权限
 - 架构：x86_64 / ARM64
 - 内存：建议 512MB 以上
