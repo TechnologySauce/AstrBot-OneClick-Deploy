@@ -42,6 +42,12 @@
 下载并执行脚本：
 
 ```bash
+# GitHub 源（推荐）
+wget -O astrbot-install.sh https://raw.githubusercontent.com/TechnologySauce/AstrBot-OneClick-Deploy/main/astrbot-install.sh && chmod +x astrbot-install.sh && ./astrbot-install.sh
+```
+
+```bash
+# Gitee 源（国内备用）
 wget -O astrbot-install.sh https://gitee.com/einternet/AstrBot-OneClick-Deploy/raw/main/astrbot-install.sh && chmod +x astrbot-install.sh && ./astrbot-install.sh
 ```
 
@@ -223,7 +229,7 @@ wget -O astrbot-install.sh https://gitee.com/einternet/AstrBot-OneClick-Deploy/r
 - **作者**：科技酱
 - **官网**：https://www.asoe.cn
 - **技术文档**：https://docs.asoe.cn
-- **GitHub**：https://github.com/techjiang/
+- **GitHub**：https://github.com/TechnologySauce
 - **哔哩哔哩**：https://space.bilibili.com/1768832152
 - **玲珑**：https://forums.asoe.cn/
 - **QQ群**：291974598

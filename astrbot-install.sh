@@ -6,12 +6,13 @@
 # 作者：科技酱
 # 网站：https://www.asoe.cn
 # 技术文档：https://docs.asoe.cn
-# GitHub：https://github.com/techjiang/
+# GitHub：https://github.com/TechnologySauce
 # 哔哩哔哩：https://space.bilibili.com/1768832152
 # 玲珑：https://forums.asoe.cn/
 # QQ群：291974598  QQ群②：474819022  QQ群③：631167288
 #
-# 项目仓库：https://gitee.com/einternet/AstrBot-OneClick-Deploy
+# 项目仓库：https://github.com/TechnologySauce/AstrBot-OneClick-Deploy
+#           https://gitee.com/einternet/AstrBot-OneClick-Deploy
 # ==============================================================================
 
 # 不使用 set -e，改为手动错误处理以提供更好的交互体验
@@ -61,8 +62,9 @@ NAPCAT_CPU_LIMIT="0"
 # 包管理器（auto/detect: 自动检测）
 PKG_MANAGER=""
 
-# 脚本下载地址
-SCRIPT_URL="https://gitee.com/einternet/AstrBot-OneClick-Deploy/raw/main/astrbot-install.sh"
+# 脚本下载地址（优先 GitHub，Gitee 作为备用）
+SCRIPT_URL="https://raw.githubusercontent.com/TechnologySauce/AstrBot-OneClick-Deploy/main/astrbot-install.sh"
+SCRIPT_URL_BACKUP="https://gitee.com/einternet/AstrBot-OneClick-Deploy/raw/main/astrbot-install.sh"
 
 # 镜像加速器配置文件
 DAEMON_JSON="/etc/docker/daemon.json"
@@ -260,7 +262,7 @@ BANNER
     echo -e "  作者：${AUTHOR}"
     echo -e "  官网：https://www.asoe.cn"
     echo -e "  文档：https://docs.asoe.cn"
-    echo -e "  项目：https://gitee.com/einternet/AstrBot-OneClick-Deploy"
+    echo -e "  项目：https://github.com/TechnologySauce/AstrBot-OneClick-Deploy"
     echo -e "  部署方式：${YELLOW}${DEPLOY_METHOD}${NC}"
     if [ "$NON_INTERACTIVE" = true ]; then
         echo -e "  模式：${YELLOW}非交互模式${NC}"
@@ -2062,7 +2064,7 @@ main_menu() {
                 echo -e "  作者：${AUTHOR}"
                 echo -e "  官网：https://www.asoe.cn"
                 echo -e "  文档：https://docs.asoe.cn"
-                echo -e "  GitHub：https://github.com/techjiang/"
+                echo -e "  GitHub：https://github.com/TechnologySauce"
                 echo -e "  哔哩哔哩：https://space.bilibili.com/1768832152"
                 echo -e "  玲珑：https://forums.asoe.cn/"
                 echo -e "  QQ群：291974598 | 474819022 | 631167288"
@@ -2094,9 +2096,12 @@ self_update() {
     info "正在从远程获取最新版本..."
 
     if ! wget -q -O "$tmp_path" "$SCRIPT_URL" 2>/dev/null; then
-        error "下载最新脚本失败！请检查网络连接。"
-        rm -f "$tmp_path" 2>/dev/null
-        return 1
+        warn "从 GitHub 下载失败，尝试 Gitee 备用源..."
+        if ! wget -q -O "$tmp_path" "$SCRIPT_URL_BACKUP" 2>/dev/null; then
+            error "下载最新脚本失败！请检查网络连接。"
+            rm -f "$tmp_path" 2>/dev/null
+            return 1
+        fi
     fi
 
     # 检查下载的文件是否为有效脚本
