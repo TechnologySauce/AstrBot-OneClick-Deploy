@@ -31,12 +31,12 @@ NC='\033[0m' # No Color
 # 项目信息
 PROJECT_NAME="AstrBot"
 AUTHOR="科技酱"
-VERSION="3.0.0"
+VERSION="3.0.1"
 
 # 容器与数据卷配置
 ASTRBOT_CONTAINER_NAME="astrbot"
 NAPCAT_CONTAINER_NAME="napcat"
-ASTRBOT_IMAGE="snowykami/astrbot:latest"
+ASTRBOT_IMAGE="soulter/astrbot:latest"
 NAPCAT_IMAGE="mlikiowa/napcat-docker:latest"
 
 # 数据卷路径（宿主机）
@@ -1368,7 +1368,11 @@ deploy_astrbot() {
     # 拉取镜像
     info "拉取 AstrBot 镜像（$ASTRBOT_IMAGE）..."
     if ! docker pull "$ASTRBOT_IMAGE"; then
-        error "AstrBot 镜像拉取失败！请检查网络或镜像加速配置。"
+        error "AstrBot 镜像拉取失败！"
+        tip "请尝试以下排查步骤："
+        tip "  1. 确认 Docker 镜像加速已配置（菜单选项 3）"
+        tip "  2. 手动测试：docker pull $ASTRBOT_IMAGE"
+        tip "  3. 如加速源不可用，可更换其他镜像加速源后重试"
         return 1
     fi
 
@@ -1475,7 +1479,11 @@ deploy_napcat() {
     # 拉取镜像
     info "拉取 NapCat 镜像（$NAPCAT_IMAGE）..."
     if ! docker pull "$NAPCAT_IMAGE"; then
-        error "NapCat 镜像拉取失败！请检查网络或镜像加速配置。"
+        error "NapCat 镜像拉取失败！"
+        tip "请尝试以下排查步骤："
+        tip "  1. 确认 Docker 镜像加速已配置（菜单选项 3）"
+        tip "  2. 手动测试：docker pull $NAPCAT_IMAGE"
+        tip "  3. 如加速源不可用，可更换其他镜像加速源后重试"
         return 1
     fi
 
