@@ -31,7 +31,7 @@ NC='\033[0m' # No Color
 # 项目信息
 PROJECT_NAME="AstrBot"
 AUTHOR="科技酱"
-VERSION="3.1.0"
+VERSION="3.2.0"
 
 # 容器与数据卷配置
 ASTRBOT_CONTAINER_NAME="astrbot"
@@ -186,6 +186,121 @@ pull_image_with_retry() {
     tip "  3. 检查网络：ping hub.docker.com"
     tip "  4. 查看加速源状态：docker info | grep -A5 'Registry Mirrors'"
     return 1
+}
+
+# 显示 AstrBot 登录凭据（从容器日志和配置文件中提取）
+show_astrbot_credentials() {
+    local server_ip=$(get_server_ip)
+    echo ""
+    print_separator
+    echo -e "${GREEN}  AstrBot 登录信息${NC}"
+    print_separator
+
+    # AstrBot 首次启动后会在日志中输出初始用户名和密码
+    # 等待容器完全启动
+    info "正在提取登录凭据（请稍候）..."
+    sleep 5
+
+    # 从日志中提取用户名和密码
+    local abot_log
+    abot_log=$(docker logs "$ASTRBOT_CONTAINER_NAME" 2>&1 || true)
+
+    local abot_username=""
+    local abot_password=""
+
+    # AstrBot 日志中通常包含 "username" 和 "password" 信息
+    # 尝试多种格式提取
+    abot_username=$(echo "$abot_log" | grep -iE "username|用户名|admin" | head -1 | grep -oE '[a-zA-Z0-9_]+' | tail -1 || true)
+    abot_password=$(echo "$abot_log" | grep -iE "password|密码" | head -1 | grep -oE '[a-zA-Z0-9_!@#$%^&*]+' | tail -1 || true)
+
+    # 如果日志没找到，尝试从配置文件中读取
+    if [ -z "$abot_username" ] || [ -z "$abot_password" ]; then
+        local config_file="${ASTRBOT_DATA_DIR}/cmd_config.json"
+        if [ -f "$config_file" ]; then
+            abot_username=$(grep -oE '"username"\s*:\s*"[^"]*"' "$config_file" 2>/dev/null | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
+            abot_password=$(grep -oE '"password"\s*:\s*"[^"]*"' "$config_file" 2>/dev/null | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
+        fi
+    fi
+
+    # 尝试从容器内部读取配置
+    if [ -z "$abot_username" ] || [ -z "$abot_password" ]; then
+        local container_config
+        container_config=$(docker exec "$ASTRBOT_CONTAINER_NAME" cat /AstrBot/data/cmd_config.json 2>/dev/null || true)
+        if [ -n "$container_config" ]; then
+            abot_username=$(echo "$container_config" | grep -oE '"username"\s*:\s*"[^"]*"' | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
+            abot_password=$(echo "$container_config" | grep -oE '"password"\s*:\s*"[^"]*"' | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
+        fi
+    fi
+
+    echo -e "  ${CYAN}访问地址${NC}：http://${server_ip}:${ASTRBOT_PORT}"
+
+    if [ -n "$abot_username" ] && [ -n "$abot_password" ]; then
+        echo -e "  ${CYAN}用户名${NC}  ：${YELLOW}${abot_username}${NC}"
+        echo -e "  ${CYAN}密码${NC}    ：${YELLOW}${abot_password}${NC}"
+    else
+        warn "未能自动提取凭据，请手动查看："
+        tip "  查看日志：docker logs $ASTRBOT_CONTAINER_NAME"
+        tip "  配置文件：cat $ASTRBOT_DATA_DIR/cmd_config.json"
+        tip "  默认用户名通常为：astrbot"
+        tip "  首次密码在启动日志中输出，请搜索关键词 password"
+    fi
+
+    tip "登录后请及时修改默认密码"
+    print_separator
+}
+
+# 显示 NapCat WebUI Token（从配置文件或日志中提取）
+show_napcat_credentials() {
+    local server_ip=$(get_server_ip)
+    echo ""
+    print_separator
+    echo -e "${GREEN}  NapCat WebUI 登录信息${NC}"
+    print_separator
+
+    info "正在提取 WebUI Token（请稍候）..."
+    sleep 3
+
+    local ncat_token=""
+
+    # 尝试从宿主机挂载的配置文件中读取 token
+    local webui_config="${NAPCAT_DATA_DIR}/webui.json"
+    if [ -f "$webui_config" ]; then
+        ncat_token=$(grep -oE '"token"\s*:\s*"[^"]*"' "$webui_config" 2>/dev/null | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
+    fi
+
+    # 如果宿主机没找到，尝试从容器内部读取
+    if [ -z "$ncat_token" ]; then
+        local container_config
+        container_config=$(docker exec "$NAPCAT_CONTAINER_NAME" cat /app/napcat/config/webui.json 2>/dev/null || true)
+        if [ -n "$container_config" ]; then
+            ncat_token=$(echo "$container_config" | grep -oE '"token"\s*:\s*"[^"]*"' | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
+        fi
+    fi
+
+    # 如果配置文件没找到，尝试从日志中提取
+    if [ -z "$ncat_token" ]; then
+        local ncat_log
+        ncat_log=$(docker logs "$NAPCAT_CONTAINER_NAME" 2>&1 || true)
+        # 日志格式: WebUi User Panel Url: http://127.0.0.1:6099/webui?token=xxxxx
+        ncat_token=$(echo "$ncat_log" | grep -oE 'token=[a-zA-Z0-9]+' | head -1 | cut -d'=' -f2 || true)
+    fi
+
+    echo -e "  ${CYAN}WebUI 地址${NC}：http://${server_ip}:${NAPCAT_PORT}/webui"
+
+    if [ -n "$ncat_token" ]; then
+        echo -e "  ${CYAN}Token${NC}     ：${YELLOW}${ncat_token}${NC}"
+        echo ""
+        echo -e "  ${GREEN}直接访问链接${NC}："
+        echo -e "  http://${server_ip}:${NAPCAT_PORT}/webui?token=${ncat_token}"
+    else
+        warn "未能自动提取 Token，请手动查看："
+        tip "  查看日志：docker logs $NAPCAT_CONTAINER_NAME"
+        tip "  配置文件：cat $NAPCAT_DATA_DIR/webui.json"
+        tip "  日志中搜索关键词 token"
+    fi
+
+    tip "首次登录需扫码 QQ 二维码，登录后请修改 Token"
+    print_separator
 }
 
 # 检查网络连通性
@@ -1428,6 +1543,8 @@ deploy_astrbot() {
         info "AstrBot 部署成功！"
         tip "访问地址：http://${server_ip}:${ASTRBOT_PORT}"
         tip "数据目录：$ASTRBOT_DATA_DIR"
+        # 显示登录凭据
+        show_astrbot_credentials
     else
         error "AstrBot 容器启动失败！请查看日志：docker logs $ASTRBOT_CONTAINER_NAME"
     fi
@@ -1545,6 +1662,8 @@ deploy_napcat() {
         info "NapCat 部署成功！"
         tip "WebUI 地址：http://${server_ip}:${NAPCAT_PORT}"
         tip "数据目录：$NAPCAT_DATA_DIR"
+        # 显示 WebUI Token
+        show_napcat_credentials
     else
         error "NapCat 容器启动失败！请查看日志：docker logs $NAPCAT_CONTAINER_NAME"
     fi
@@ -2007,6 +2126,13 @@ main_menu() {
                 tip "NapCat：http://${server_ip}:${NAPCAT_PORT}"
                 tip "数据目录：$ASTRBOT_DATA_DIR, $NAPCAT_DATA_DIR"
                 print_separator
+                echo ""
+                echo -e "${PURPLE}========== 登录凭据汇总 ==========${NC}"
+                show_astrbot_credentials
+                show_napcat_credentials
+                echo -e "${PURPLE}===================================${NC}"
+                echo ""
+                print_separator
                 ;;
             2)
                 install_docker
@@ -2420,6 +2546,13 @@ run_command() {
             info "一键部署完成！"
             tip "AstrBot：http://${server_ip}:${ASTRBOT_PORT}"
             tip "NapCat：http://${server_ip}:${NAPCAT_PORT}"
+            print_separator
+            echo ""
+            echo -e "${PURPLE}========== 登录凭据汇总 ==========${NC}"
+            show_astrbot_credentials
+            show_napcat_credentials
+            echo -e "${PURPLE}===================================${NC}"
+            echo ""
             print_separator
             ;;
         update)
