@@ -31,7 +31,7 @@ NC='\033[0m' # No Color
 # 项目信息
 PROJECT_NAME="AstrBot"
 AUTHOR="科技酱"
-VERSION="3.2.1"
+VERSION="3.3.0"
 
 # 容器与数据卷配置
 ASTRBOT_CONTAINER_NAME="astrbot"
@@ -188,7 +188,7 @@ pull_image_with_retry() {
     return 1
 }
 
-# 显示 AstrBot 登录信息（AstrBot 首次使用需通过 Web 界面设置密码）
+# 显示 AstrBot 登录信息（从容器启动日志中提取初始随机密码）
 show_astrbot_credentials() {
     local server_ip=$(get_server_ip)
     echo ""
@@ -196,42 +196,56 @@ show_astrbot_credentials() {
     echo -e "${GREEN}  AstrBot 登录信息${NC}"
     print_separator
 
-    # 检查是否已完成初始设置（配置文件中 password 是否为空）
-    local setup_done=false
+    # 等待容器完全启动
+    info "正在获取登录凭据（等待容器启动）..."
+    sleep 8
+
+    # 从容器日志中提取初始密码
+    # AstrBot 首次启动时会生成随机强密码并输出到日志
+    local abot_log
+    abot_log=$(docker logs "$ASTRBOT_CONTAINER_NAME" 2>&1 || true)
+
+    local abot_password=""
+    local abot_username="astrbot"
+
+    # 尝试多种日志格式提取密码
+    # 格式1: "初始密码" 或 "initial password" 后跟密码
+    # 格式2: "password:" 后跟密码
+    # 格式3: 日志中单独一行的随机字符串（24位字母数字）
+    abot_password=$(echo "$abot_log" | grep -iE "initial.*password|初始密码|dashboard.*password|默认密码|generated.*password" | grep -oE '[a-zA-Z0-9]{16,32}' | head -1 || true)
+
+    # 如果上面没找到，尝试更宽泛的搜索
+    if [ -z "$abot_password" ]; then
+        abot_password=$(echo "$abot_log" | grep -iE "password|密码" | grep -oE '\b[a-zA-Z0-9]{20,32}\b' | head -1 || true)
+    fi
+
+    # 从配置文件中提取用户名
     local config_file="${ASTRBOT_DATA_DIR}/cmd_config.json"
     if [ -f "$config_file" ]; then
-        # 检查 pbkdf2_password 或 password 字段是否有值
-        if grep -q '"pbkdf2_password"\s*:\s*"[^"]+"' "$config_file" 2>/dev/null || \
-           grep -q '"password"\s*:\s*"[^"]+"' "$config_file" 2>/dev/null; then
-            setup_done=true
+        local saved_username=""
+        saved_username=$(grep -oE '"username"\s*:\s*"[^"]*"' "$config_file" 2>/dev/null | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
+        if [ -n "$saved_username" ]; then
+            abot_username="$saved_username"
         fi
     fi
 
     echo -e "  ${CYAN}访问地址${NC}：http://${server_ip}:${ASTRBOT_PORT}"
-    echo ""
+    echo -e "  ${CYAN}用户名${NC}  ：${YELLOW}${abot_username}${NC}"
 
-    if [ "$setup_done" = true ]; then
-        # 已设置过密码
-        local saved_username=""
-        saved_username=$(grep -oE '"username"\s*:\s*"[^"]*"' "$config_file" 2>/dev/null | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
-        if [ -n "$saved_username" ]; then
-            echo -e "  ${CYAN}用户名${NC}  ：${YELLOW}${saved_username}${NC}"
-        else
-            echo -e "  ${CYAN}用户名${NC}  ：${YELLOW}astrbot${NC}（默认）"
-        fi
-        echo -e "  ${CYAN}密码${NC}    ：${YELLOW}你之前设置的密码${NC}"
-        tip "如忘记密码，可删除 ${config_file} 中的 password 字段重置"
+    if [ -n "$abot_password" ]; then
+        echo -e "  ${CYAN}密码${NC}    ：${YELLOW}${abot_password}${NC}"
+        echo ""
+        tip "首次登录后请及时修改密码"
     else
-        # 首次使用，需要设置密码
-        echo -e "  ${PURPLE}首次使用，请按以下步骤设置账号密码：${NC}"
+        # 没提取到，给出手动查看命令
+        echo -e "  ${CYAN}密码${NC}    ：${YELLOW}见启动日志${NC}"
         echo ""
-        echo -e "  ${YELLOW}1${NC}. 浏览器打开：http://${server_ip}:${ASTRBOT_PORT}"
-        echo -e "  ${YELLOW}2${NC}. 首次访问会进入「初始化设置」页面"
-        echo -e "  ${YELLOW}3${NC}. 设置你的用户名和密码（默认用户名：astrbot）"
-        echo -e "  ${YELLOW}4${NC}. 设置完成后用该账号密码登录"
+        warn "未能自动提取密码，请手动查看日志："
         echo ""
-        tip "默认用户名：astrbot（可在设置时修改）"
-        tip "密码在首次设置时由你自己决定，没有预设密码"
+        echo -e "  ${PURPLE}docker logs $ASTRBOT_CONTAINER_NAME 2>&1 | grep -i password${NC}"
+        echo ""
+        tip "AstrBot 首次启动会生成随机密码并输出到日志"
+        tip "旧版默认密码 astrbot 已被随机密码替换，请用日志中的新密码登录"
     fi
     print_separator
 }
