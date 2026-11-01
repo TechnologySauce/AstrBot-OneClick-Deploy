@@ -31,7 +31,7 @@ NC='\033[0m' # No Color
 # 项目信息
 PROJECT_NAME="AstrBot"
 AUTHOR="科技酱"
-VERSION="3.0.1"
+VERSION="3.1.0"
 
 # 容器与数据卷配置
 ASTRBOT_CONTAINER_NAME="astrbot"
@@ -158,10 +158,40 @@ get_server_ip() {
     echo "$ip"
 }
 
+# 带重试的镜像拉取（失败自动重试，最多 3 次）
+pull_image_with_retry() {
+    local image="$1"
+    local max_retries=3
+    local attempt=1
+
+    while [ "$attempt" -le "$max_retries" ]; do
+        info "拉取镜像 $image（第 ${attempt}/${max_retries} 次）..."
+        if docker pull "$image" 2>&1; then
+            info "镜像拉取成功：$image"
+            return 0
+        fi
+
+        warn "第 ${attempt} 次拉取失败"
+        if [ "$attempt" -lt "$max_retries" ]; then
+            tip "等待 5 秒后重试..."
+            sleep 5
+        fi
+        attempt=$((attempt + 1))
+    done
+
+    error "镜像拉取失败（已重试 ${max_retries} 次）：$image"
+    tip "排查建议："
+    tip "  1. 确认镜像加速已配置（菜单选项 3）"
+    tip "  2. 手动测试：docker pull $image"
+    tip "  3. 检查网络：ping hub.docker.com"
+    tip "  4. 查看加速源状态：docker info | grep -A5 'Registry Mirrors'"
+    return 1
+}
+
 # 检查网络连通性
 check_network() {
     info "检查网络连通性..."
-    local test_hosts=("gitee.com" "download.docker.com" "hub.docker.com")
+    local test_hosts=("gitee.com" "download.docker.com" "github.com")
     local all_ok=true
     # 兼容不同系统的 ping 参数
     local ping_cmd="ping"
@@ -571,10 +601,11 @@ configure_docker_mirror() {
 {
     "registry-mirrors": [
         "https://docker.1ms.run",
-        "https://docker.xuanyuan.me",
         "https://docker.m.daocloud.io",
-        "https://dockerproxy.com",
-        "https://docker.nju.edu.cn",
+        "https://docker.imgdb.de",
+        "https://docker-0.unsee.tech",
+        "https://docker.hlmirror.com",
+        "https://hub.rat.dev",
         "https://mirror.ccs.tencentyun.com",
         "https://hub-mirror.c.163.com"
     ],
@@ -591,14 +622,16 @@ EOF
     step "重启 Docker 使配置生效..."
     systemctl daemon-reload
     systemctl restart docker
+    sleep 2
 
     info "镜像加速配置完成！"
-    tip "已配置以下加速源："
+    tip "已配置以下加速源（已按稳定性排序）："
     echo -e "    - https://docker.1ms.run"
-    echo -e "    - https://docker.xuanyuan.me"
     echo -e "    - https://docker.m.daocloud.io"
-    echo -e "    - https://dockerproxy.com"
-    echo -e "    - https://docker.nju.edu.cn"
+    echo -e "    - https://docker.imgdb.de"
+    echo -e "    - https://docker-0.unsee.tech"
+    echo -e "    - https://docker.hlmirror.com"
+    echo -e "    - https://hub.rat.dev"
     echo -e "    - https://mirror.ccs.tencentyun.com"
     echo -e "    - https://hub-mirror.c.163.com"
 }
@@ -1365,14 +1398,16 @@ deploy_astrbot() {
     info "创建数据目录：$ASTRBOT_DATA_DIR"
     mkdir -p "$ASTRBOT_DATA_DIR"
 
-    # 拉取镜像
-    info "拉取 AstrBot 镜像（$ASTRBOT_IMAGE）..."
-    if ! docker pull "$ASTRBOT_IMAGE"; then
-        error "AstrBot 镜像拉取失败！"
-        tip "请尝试以下排查步骤："
-        tip "  1. 确认 Docker 镜像加速已配置（菜单选项 3）"
-        tip "  2. 手动测试：docker pull $ASTRBOT_IMAGE"
-        tip "  3. 如加速源不可用，可更换其他镜像加速源后重试"
+    # 检查镜像加速是否已配置
+    if ! grep -q "registry-mirrors" "$DAEMON_JSON" 2>/dev/null; then
+        warn "未检测到 Docker 镜像加速配置，建议先配置以加速拉取"
+        if confirm "是否自动配置镜像加速？" "y"; then
+            configure_docker_mirror
+        fi
+    fi
+
+    # 拉取镜像（带重试）
+    if ! pull_image_with_retry "$ASTRBOT_IMAGE"; then
         return 1
     fi
 
@@ -1404,7 +1439,7 @@ update_astrbot() {
 
     # 拉取最新镜像
     info "拉取最新 AstrBot 镜像..."
-    docker pull "$ASTRBOT_IMAGE"
+    pull_image_with_retry "$ASTRBOT_IMAGE" || return 1
 
     # 停止并删除旧容器
     info "停止并删除旧容器..."
@@ -1476,14 +1511,16 @@ deploy_napcat() {
     info "创建数据目录：$NAPCAT_DATA_DIR"
     mkdir -p "$NAPCAT_DATA_DIR"
 
-    # 拉取镜像
-    info "拉取 NapCat 镜像（$NAPCAT_IMAGE）..."
-    if ! docker pull "$NAPCAT_IMAGE"; then
-        error "NapCat 镜像拉取失败！"
-        tip "请尝试以下排查步骤："
-        tip "  1. 确认 Docker 镜像加速已配置（菜单选项 3）"
-        tip "  2. 手动测试：docker pull $NAPCAT_IMAGE"
-        tip "  3. 如加速源不可用，可更换其他镜像加速源后重试"
+    # 检查镜像加速是否已配置
+    if ! grep -q "registry-mirrors" "$DAEMON_JSON" 2>/dev/null; then
+        warn "未检测到 Docker 镜像加速配置，建议先配置以加速拉取"
+        if confirm "是否自动配置镜像加速？" "y"; then
+            configure_docker_mirror
+        fi
+    fi
+
+    # 拉取镜像（带重试）
+    if ! pull_image_with_retry "$NAPCAT_IMAGE"; then
         return 1
     fi
 
@@ -1519,7 +1556,7 @@ update_napcat() {
 
     # 拉取最新镜像
     info "拉取最新 NapCat 镜像..."
-    docker pull "$NAPCAT_IMAGE"
+    pull_image_with_retry "$NAPCAT_IMAGE" || return 1
 
     # 停止并删除旧容器
     info "停止并删除旧容器..."

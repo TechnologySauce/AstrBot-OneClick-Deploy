@@ -1,5 +1,18 @@
 # 更新日志
 
+## v3.1.0 (2026-11-01)
+
+### 修复
+- **镜像加速源大更新** — 移除已关停的 `dockerproxy.com` 和频繁限流的 `docker.xuanyuan.me`，新增 `docker.imgdb.de`、`docker-0.unsee.tech`、`docker.hlmirror.com`、`hub.rat.dev` 等稳定源
+- **镜像拉取重试机制** — 新增 `pull_image_with_retry()` 函数，拉取失败自动重试 3 次，间隔 5 秒，避免单次 302/超时导致部署中断
+- **部署前自动检查加速配置** — 选择部署 AstrBot/NapCat 时自动检测镜像加速是否已配置，未配置时提示一键配置
+- **更新服务也使用重试** — `update_astrbot`/`update_napcat` 镜像拉取同样使用重试机制
+
+### 优化
+- Docker 重启后增加 2 秒等待，确保守护进程完全就绪
+- 镜像拉取失败提示更详细（加速源状态检查命令）
+- 网络连通性测试改用 `github.com` 替代 `hub.docker.com`（后者国内常不可达）
+
 ## v3.0.1 (2026-10-31)
 
 ### 修复
