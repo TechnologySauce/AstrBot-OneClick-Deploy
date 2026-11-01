@@ -31,7 +31,7 @@ NC='\033[0m' # No Color
 # 项目信息
 PROJECT_NAME="AstrBot"
 AUTHOR="科技酱"
-VERSION="3.2.0"
+VERSION="3.2.1"
 
 # 容器与数据卷配置
 ASTRBOT_CONTAINER_NAME="astrbot"
@@ -188,7 +188,7 @@ pull_image_with_retry() {
     return 1
 }
 
-# 显示 AstrBot 登录凭据（从容器日志和配置文件中提取）
+# 显示 AstrBot 登录信息（AstrBot 首次使用需通过 Web 界面设置密码）
 show_astrbot_credentials() {
     local server_ip=$(get_server_ip)
     echo ""
@@ -196,56 +196,43 @@ show_astrbot_credentials() {
     echo -e "${GREEN}  AstrBot 登录信息${NC}"
     print_separator
 
-    # AstrBot 首次启动后会在日志中输出初始用户名和密码
-    # 等待容器完全启动
-    info "正在提取登录凭据（请稍候）..."
-    sleep 5
-
-    # 从日志中提取用户名和密码
-    local abot_log
-    abot_log=$(docker logs "$ASTRBOT_CONTAINER_NAME" 2>&1 || true)
-
-    local abot_username=""
-    local abot_password=""
-
-    # AstrBot 日志中通常包含 "username" 和 "password" 信息
-    # 尝试多种格式提取
-    abot_username=$(echo "$abot_log" | grep -iE "username|用户名|admin" | head -1 | grep -oE '[a-zA-Z0-9_]+' | tail -1 || true)
-    abot_password=$(echo "$abot_log" | grep -iE "password|密码" | head -1 | grep -oE '[a-zA-Z0-9_!@#$%^&*]+' | tail -1 || true)
-
-    # 如果日志没找到，尝试从配置文件中读取
-    if [ -z "$abot_username" ] || [ -z "$abot_password" ]; then
-        local config_file="${ASTRBOT_DATA_DIR}/cmd_config.json"
-        if [ -f "$config_file" ]; then
-            abot_username=$(grep -oE '"username"\s*:\s*"[^"]*"' "$config_file" 2>/dev/null | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
-            abot_password=$(grep -oE '"password"\s*:\s*"[^"]*"' "$config_file" 2>/dev/null | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
-        fi
-    fi
-
-    # 尝试从容器内部读取配置
-    if [ -z "$abot_username" ] || [ -z "$abot_password" ]; then
-        local container_config
-        container_config=$(docker exec "$ASTRBOT_CONTAINER_NAME" cat /AstrBot/data/cmd_config.json 2>/dev/null || true)
-        if [ -n "$container_config" ]; then
-            abot_username=$(echo "$container_config" | grep -oE '"username"\s*:\s*"[^"]*"' | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
-            abot_password=$(echo "$container_config" | grep -oE '"password"\s*:\s*"[^"]*"' | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
+    # 检查是否已完成初始设置（配置文件中 password 是否为空）
+    local setup_done=false
+    local config_file="${ASTRBOT_DATA_DIR}/cmd_config.json"
+    if [ -f "$config_file" ]; then
+        # 检查 pbkdf2_password 或 password 字段是否有值
+        if grep -q '"pbkdf2_password"\s*:\s*"[^"]+"' "$config_file" 2>/dev/null || \
+           grep -q '"password"\s*:\s*"[^"]+"' "$config_file" 2>/dev/null; then
+            setup_done=true
         fi
     fi
 
     echo -e "  ${CYAN}访问地址${NC}：http://${server_ip}:${ASTRBOT_PORT}"
+    echo ""
 
-    if [ -n "$abot_username" ] && [ -n "$abot_password" ]; then
-        echo -e "  ${CYAN}用户名${NC}  ：${YELLOW}${abot_username}${NC}"
-        echo -e "  ${CYAN}密码${NC}    ：${YELLOW}${abot_password}${NC}"
+    if [ "$setup_done" = true ]; then
+        # 已设置过密码
+        local saved_username=""
+        saved_username=$(grep -oE '"username"\s*:\s*"[^"]*"' "$config_file" 2>/dev/null | head -1 | sed 's/.*:.*"\(.*\)"/\1/' || true)
+        if [ -n "$saved_username" ]; then
+            echo -e "  ${CYAN}用户名${NC}  ：${YELLOW}${saved_username}${NC}"
+        else
+            echo -e "  ${CYAN}用户名${NC}  ：${YELLOW}astrbot${NC}（默认）"
+        fi
+        echo -e "  ${CYAN}密码${NC}    ：${YELLOW}你之前设置的密码${NC}"
+        tip "如忘记密码，可删除 ${config_file} 中的 password 字段重置"
     else
-        warn "未能自动提取凭据，请手动查看："
-        tip "  查看日志：docker logs $ASTRBOT_CONTAINER_NAME"
-        tip "  配置文件：cat $ASTRBOT_DATA_DIR/cmd_config.json"
-        tip "  默认用户名通常为：astrbot"
-        tip "  首次密码在启动日志中输出，请搜索关键词 password"
+        # 首次使用，需要设置密码
+        echo -e "  ${PURPLE}首次使用，请按以下步骤设置账号密码：${NC}"
+        echo ""
+        echo -e "  ${YELLOW}1${NC}. 浏览器打开：http://${server_ip}:${ASTRBOT_PORT}"
+        echo -e "  ${YELLOW}2${NC}. 首次访问会进入「初始化设置」页面"
+        echo -e "  ${YELLOW}3${NC}. 设置你的用户名和密码（默认用户名：astrbot）"
+        echo -e "  ${YELLOW}4${NC}. 设置完成后用该账号密码登录"
+        echo ""
+        tip "默认用户名：astrbot（可在设置时修改）"
+        tip "密码在首次设置时由你自己决定，没有预设密码"
     fi
-
-    tip "登录后请及时修改默认密码"
     print_separator
 }
 
